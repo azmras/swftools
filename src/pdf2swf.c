@@ -1,23 +1,23 @@
 /* pdf2swf.c
-   main routine for pdf2swf(1)
+main routine for pdf2swf(1)
 
-   Part of the swftools package.
-   
-   Copyright (c) 2001,2002,2003 Matthias Kramm <kramm@quiss.org> 
- 
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
+Part of the swftools package.
 
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
+Copyright (c) 2001,2002,2003 Matthias Kramm <kramm@quiss.org>
 
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -48,6 +48,9 @@
 #include "../lib/log.h"
 
 #define SWFDIR concatPaths(getInstallationPath(), "swfs")
+
+static int step = 1;
+static char * infoname = 0;
 
 static gfxsource_t*driver = 0;
 static gfxdevice_t*out = 0;
@@ -163,6 +166,16 @@ int args_callback_option(char*name,char*val) {
 	outputname = val;
 	return 1;
     }
+	else if (!strcmp(name, "x"))
+	{
+		infoname = val;
+		return 1;
+	}
+	else if (!strcmp(name, "e"))
+	{
+		step = atoi(val);
+		return 1;
+	}
     else if (!strcmp(name, "v"))
     {
 	loglevel ++;
@@ -587,6 +600,65 @@ void show_info(gfxsource_t*driver, char*filename)
     pdf->destroy(pdf);
 }
 
+char* xstrip(const char*filename)
+{
+	char*last1 = strrchr(filename, '/');
+	char*last2 = strrchr(filename, '\\');
+	const char*pos = filename;
+	char*name;
+	if(last1>pos) pos = last1 + 1;
+	if(last2>pos) pos = last2 + 1;
+	name = (char*)malloc(strlen(pos));
+	strcpy(name, pos);
+	return name;
+}
+
+void show_xml(gfxdocument_t* pdf, char*filename)
+{
+
+	int pagenr;
+	FILE*fo=0;
+
+	if(infoname) {
+		fo = fopen(infoname, "wb");
+		if(!fo) {
+			perror(infoname);exit(1);;
+		}
+	} else {
+		fo = stdout;
+	}
+
+	int pn = 0;
+	int w1, h1;
+	for(pagenr = 1; pagenr <= pdf->num_pages; pagenr++)
+	{
+		gfxpage_t*page = pdf->getpage(pdf,pagenr);
+		int w=page->width;
+		int h=page->height;
+		if(pagenr==1) {
+			pn = 1;
+			w1=w;
+			h1=h;
+			fprintf(fo,"<Document pages=\"%d\" w=\"%d\" h=\"%d\">\n", pdf->num_pages, w1, h1 );
+		}
+		if(is_in_range(pagenr, pagerange)) {
+			int frame = pagenr%step;
+			if(frame==0) frame = step;
+			char buf[1024];
+			sprintf(buf, outputname, 1+((pagenr-1)/step));
+			if(h1==h && w1==w)
+			fprintf(fo, "\t<p i=\"%d\" n=\"%s\" f=\"%d\"/>\n", pagenr, xstrip(buf), frame);
+			else
+			fprintf(fo, "\t<p i=\"%d\" w=\"%d\" h=\"%d\" n=\"%s\" f=\"%d\"/>\n",
+			pagenr, w, h, xstrip(buf), frame);
+		}
+	}
+	if(pn==0) fprintf(fo,"<Document/>");
+	else fprintf(fo,"</Document>\n");
+	fclose(fo);
+}
+
+
 
 static gfxdevice_t swf,wrap,rescale;
 gfxdevice_t*create_output_device()
@@ -722,7 +794,10 @@ int main(int argn, char *argv[])
 	    msg("<error> -b/-l/-B/-L not supported together with %% in filename\n");
 	    return 1;
 	}
-	msg("<notice> outputting one file per page");
+		if(step==1)
+		msg("<notice> outputting one file per page");
+		else
+		msg("<notice> outputting %d files per page",step);
 	one_file_per_page = 1;
 	char*pattern = (char*)malloc(strlen(outputname)+2);
 	/* convert % to %d */
@@ -841,33 +916,41 @@ int main(int argn, char *argv[])
 	    pagenum = 0;
 
 	    if(one_file_per_page) {
-		gfxresult_t*result = out->finish(out);out=0;
-		char buf[1024];
-		sprintf(buf, outputname, pagenr);
-		if(result->save(result, buf) < 0) {
-		    return 1;
-		}
-		result->destroy(result);result=0;
-		out = create_output_device();;
-                pdf->prepare(pdf, out);
-		msg("<notice> Writing SWF file %s", buf);
+				if(pagenr%step==0 || pagenr==pdf->num_pages || infoname) {
+		            gfxresult_t*result = out->finish(out);out=0;
+		            char buf[1024];
+					int num = infoname?0:1+((pagenr-1)/step);
+					sprintf(buf, outputname, num);
+					if(result->save(result, buf) < 0) {
+						return 1;
+					}
+					result->destroy(result);result=0;
+					out = create_output_device();
+                    pdf->prepare(pdf, out);
+					msg("<notice> Writing SWF file %s", buf);
+					if(infoname) {
+						show_xml(pdf, filename);
+						infoname = 0;
+						pagenr = 0;
 	    }
 	}
     }
-   
-    if(one_file_per_page) {
-	// remove empty device
-	gfxresult_t*result = out->finish(out);out=0;
-	result->destroy(result);result=0;
-    } else {
-	gfxresult_t*result = out->finish(out);
-	msg("<notice> Writing SWF file %s", outputname);
-	if(result->save(result, outputname) < 0) {
-	    exit(1);
+		}
 	}
-	int width = (int)(ptroff_t)result->get(result, "width");
-	int height = (int)(ptroff_t)result->get(result, "height");
-	result->destroy(result);result=0;
+
+	if(one_file_per_page) {
+		// remove empty device
+		gfxresult_t*result = out->finish(out);out=0;
+		result->destroy(result);result=0;
+	} else {
+		gfxresult_t*result = out->finish(out);
+		msg("<notice> Writing SWF file %s", outputname);
+		if(result->save(result, outputname) < 0) {
+			exit(1);
+		}
+		int width = (int)(ptroff_t)result->get(result, "width");
+		int height = (int)(ptroff_t)result->get(result, "height");
+		result->destroy(result);result=0;
 
 	if(preloader || viewer) {
 	    const char*zip = "";
@@ -906,19 +989,19 @@ int main(int argn, char *argv[])
     pdf->destroy(pdf);
     driver->destroy(driver);
 
-   
-    /* free global parameters */
-    p = device_config;
-    while(p) {
-	parameter_t*next = p->next;
-	if(p->name) free((void*)p->name);p->name = 0;
-	if(p->value) free((void*)p->value);p->value =0;
-	p->next = 0;free(p);
-	p = next;
-    }
-    if(filters) {
-	free(filters);
-    }
+
+	/* free global parameters */
+	p = device_config;
+	while(p) {
+		parameter_t*next = p->next;
+		if(p->name) free((void*)p->name);p->name = 0;
+		if(p->value) free((void*)p->value);p->value =0;
+		p->next = 0;free(p);
+		p = next;
+	}
+	if(filters) {
+		free(filters);
+	}
 
     return 0;
 }
